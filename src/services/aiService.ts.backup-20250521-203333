@@ -1,0 +1,451 @@
+import OpenAI from 'openai';
+import { supabase } from './supabaseClient';
+import { saveGeneratedImage } from './imageService';
+
+
+function getUserMembershipLevel(user: any): 'free' | 'basic' | 'premium' | 'enterprise' {
+  // First check the membership object directly
+  if (user?.membership?.tier) {
+    const tier = user.membership.tier.toLowerCase();
+    if (['basic', 'premium', 'enterprise'].includes(tier)) return tier as any;
+  }
+  
+  // Fall back to user_metadata if available
+  const level = user?.user_metadata?.membership?.toLowerCase();
+  if (['basic', 'premium', 'enterprise'].includes(level)) return level as any;
+  
+  // Default to free
+  return 'free';
+}
+
+// Feature flags are now managed in the database
+// Each user's limits are stored in their profile
+
+
+  userId: string, 
+  tier: 'free' | 'basic' | 'premium' | 'enterprise'
+): Promise<{ success: boolean }> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      membership_tier: tier
+    })
+    .eq('id', userId);
+
+  if (error) {
+    console.error('Error updating membership:', error);
+    throw error;
+  }
+
+  return { success: true };
+}
+
+
+  try {
+    console.log('Getting usage for user:', userId);
+    
+    // First, try a simple query to just get the plan_id
+    console.log('Trying simple query to user_memberships (getUserUsage)...');
+    const { data: membershipData, error: membershipError } = await supabase
+      .from('user_memberships')
+      .select('plan_id, status, current_period_end')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .gte('current_period_end', new Date().toISOString())
+      .maybeSingle();
+
+    console.log('Simple membership query result (getUserUsage):', { data: membershipData, error: membershipError });
+    
+    // If we got a plan_id, try to get the max_images
+    let maxImages = 10; // Default free tier
+    const tier = membershipData?.plan_id || 'free';
+       
+    if (membershipData?.plan_id) {
+      console.log(`Found plan_id: ${membershipData.plan_id}, querying membership_plans (getUserUsage)...`);
+      
+      // Directly query the membership_plans table
+      const { data: planData, error: planError } = await supabase
+        .from('membership_plans')
+        .select('max_images')
+        .eq('id', membershipData.plan_id)
+        .single();
+        
+      console.log('Plan data (getUserUsage):', planData, 'Plan error:', planError);
+      
+      if (planData?.max_images) {
+        maxImages = planData.max_images;
+        console.log(`Using max_images from plan (getUserUsage): ${maxImages}`);
+      } else {
+        console.log('Using default max_images for enterprise (10000)');
+        maxImages = 10000; // Default enterprise limit if not found
+      }
+    } else {
+      console.log('No active membership found, using free tier limits (getUserUsage)');
+    }
+    
+    // Get the user's image count for the current month
+    const now = new Date();
+    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    
+    const { count: imageCount, error: countError } = await supabase
+      .from('generated_images')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .gte('created_at', firstDayOfMonth);
+    
+    if (countError) {
+      console.error('Error counting images (getUserUsage):', countError);
+      throw countError;
+    }
+    
+    console.log('Image count (getUserUsage):', imageCount);
+    
+    // Use the values we got from the separate queries
+    const monthlyLimit = maxImages; // From the plan query above
+    
+    const usageInfo = {
+      count: imageCount || 0,
+      limit: monthlyLimit,
+      tier: tier
+    };
+    
+    console.log('Final usage info (getUserUsage):', usageInfo);
+    return usageInfo;
+  } catch (error) {
+    console.error('Error getting user usage:', error);
+    return { count: 0, limit: 10, tier: 'free' };
+  }
+}
+
+// Get API key from environment
+const apiKey = import.meta.env.VITE_OPENAI_API_KEY?.trim();
+
+if (!apiKey) {
+  const errorMsg = 'OpenAI API key is not set. Please check your .env file and ensure it starts with VITE_ prefix.';
+  console.error(errorMsg);
+  throw new Error(errorMsg);
+}
+
+// Log the first few and last few characters of the API key for verification
+const logApiKey = (key: string | undefined) => {
+  if (!key) return 'Not found';
+  if (key.length <= 8) return 'Invalid key length';
+  return `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
+};
+
+console.log('OpenAI API Key loaded:', logApiKey(apiKey));
+
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: apiKey,
+  dangerouslyAllowBrowser: true, // Only for client-side usage
+});
+
+// Function to call the GPT Image API
+async function generateImage(prompt: string, detail: 'low' | 'high' = 'low'): Promise<string> {
+  console.log('[DEBUG] Starting generateImage with prompt and detail:', { prompt, detail });
+  console.log('[DEBUG] API Key exists:', !!apiKey);
+  
+  try {
+    console.log('[DEBUG] Calling GPT Image API with prompt:', prompt);
+    
+    // Validate API key
+    if (!apiKey) {
+      const errorMsg = 'OpenAI API key is not set';
+      console.error('[ERROR]', errorMsg);
+      throw new Error(errorMsg);
+    }
+
+    console.log('[DEBUG] Sending request to OpenAI API...');
+    
+    const startTime = Date.now();
+    const response = await openai.images.generate({
+      model: 'dall-e-3',
+      prompt: prompt,
+      n: 1,
+      size: '1024x1024',
+      response_format: 'b64_json',
+      quality: detail === 'high' ? 'hd' : 'standard',
+      style: detail === 'high' ? 'vivid' : 'natural'
+    });
+    
+    const endTime = Date.now();
+    console.log(`[DEBUG] API call completed in ${endTime - startTime}ms`);
+    console.log('[DEBUG] Raw API response:', JSON.stringify(response, null, 2));
+
+    console.log('API Response:', JSON.stringify(response, null, 2));
+
+    // Check if we have data and at least one image
+    if (!response.data || !response.data[0]) {
+      console.error('No data in response:', response);
+      throw new Error('No image data in the API response');
+    }
+
+    // Handle both URL and b64_json response formats
+    const imageData = response.data[0];
+    
+    if (imageData.url) {
+      return imageData.url;
+    } else if (imageData.b64_json) {
+      // The API returns raw base64 data, ensure it's properly formatted as a data URL
+      const base64Data = imageData.b64_json;
+      // Create a proper data URL with the correct MIME type
+      return `data:image/png;base64,${base64Data}`;
+    } else {
+      console.error('No URL or b64_json in response data:', response);
+      throw new Error('No image URL or data in the API response');
+    }
+  } catch (error: unknown) {
+    console.error('Error in generateImage:', error);
+    
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('Failed to generate image');
+  }
+};
+
+// Helper function to create enhanced prompts
+const createEnhancedPrompt = (prompt: string): string => {
+  // Remove any existing background specifications from the prompt
+  const cleanPrompt = prompt
+    .replace(/on\s+(a\s+)?(white|colored|)\s+background/gi, '')
+    .replace(/with\s+(a\s+)?(white|colored|)\s+background/gi, '')
+    .replace(/background\s*:\s*\w+/gi, '')
+    .trim();
+
+  // Clean, centered digital sticker with specific styling requirements
+  return `A clean, centered clipart-style illustration of a ${cleanPrompt}, created as a standalone digital sticker.
+
+- The subject should be fully visible and centered, with no other objects or alternate views
+- Include a white sticker border and bold black outline around the subject
+- Use natural, realistic colors with clean, flat shading (no gradients or reflections)
+- The background must be a solid light grey (#F5F5F5), with no paper textures, shadows, mockups, crop marks, page folds, or extra graphic elements
+- Do not simulate printing, cutting, or peeling — this is a single isolated digital sticker image`;
+
+};
+
+// Options for generating clipart
+export interface GenerateClipArtOptions {
+  user?: any;
+  quality?: 'low' | 'high' | 'auto';
+  privacy?: 'public' | 'private';
+}
+
+function isPaidMember(level: string): boolean {
+  return ['basic', 'premium', 'enterprise'].includes(level);
+}
+
+// Function to validate generated image meets quality requirements
+async function validateImageQuality(imageUrl: string): Promise<boolean> {
+  try {
+    const validatePrompt = `
+    Does this image meet all the following conditions?
+    
+    1. It contains only one subject.
+    2. The subject is centered and fully visible.
+    3. There are no color palettes, grids, multiple objects, or outline-only drafts.
+    4. The background is a single flat color.
+    5. There are no mockup effects, crop marks, or print layout elements.
+    
+    Respond only YES or NO.
+    `;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      max_tokens: 5,
+      messages: [
+        { 
+          role: "user", 
+          content: [
+            { type: "text", text: validatePrompt },
+            { type: "image_url", image_url: { url: imageUrl } }
+          ]
+        }
+      ],
+    });
+
+    const validationResult = response.choices[0]?.message?.content?.trim().toUpperCase();
+    return validationResult === 'YES';
+  } catch (error) {
+    console.error('Error validating image quality:', error);
+    // If validation fails, we'll assume the image is valid to prevent blocking generation
+    return true;
+  }
+}
+
+// Main function to generate clipart
+export async function generateClipArt(
+  prompt: string, 
+  options: GenerateClipArtOptions | any = {}
+): Promise<string> {
+  // Handle backward compatibility where user might be passed directly
+  const { 
+    user = null, 
+    quality = 'low',  // Default to low quality
+    privacy = 'public'  // Default to public
+  } = typeof options === 'object' && !Array.isArray(options) && options !== null 
+    ? options 
+    : { user: options };
+    
+  // Get user's membership level
+  const membershipLevel = user ? getUserMembershipLevel(user) : 'free';
+  const isPaid = isPaidMember(membershipLevel);
+  
+  // Validate quality and privacy based on membership
+  let effectiveQuality = quality === 'auto' ? 'low' : quality;
+  if (effectiveQuality === 'high' && !isPaid) {
+    effectiveQuality = 'low';
+  }
+  
+  let effectivePrivacy: 'public' | 'private' = privacy === 'private' ? 'private' : 'public';
+  if (effectivePrivacy === 'private' && !isPaid) {
+    effectivePrivacy = 'public';
+  }
+  try {
+    if (!prompt?.trim()) {
+      throw new Error('Prompt is required');
+    }
+
+    console.log('Original prompt:', prompt);
+    
+    // Track image usage for all users
+    if (user?.id) {
+      const usage = await trackImageUsage(user.id);
+      
+      // Check if user has reached their monthly limit
+      if (usage.count >= usage.limit) {
+        throw new Error(`You've reached your monthly limit of ${usage.limit} images. Upgrade your plan to generate more.`);
+      }
+    }
+
+    // Check if high quality is allowed for this user
+    if (quality === 'high' && !isPaid) {
+      throw new Error('High quality generation is only available for paid plans');
+    }
+
+    // Check if private images are allowed for this user
+    if (privacy === 'private' && !isPaid) {
+      throw new Error('Private images are only available for paid plans');
+    }
+
+    // Create enhanced prompt
+    const enhancedPrompt = createEnhancedPrompt(prompt);
+    
+    // Generate the image with retry logic for premium high-quality validation
+    console.log('Generating image with prompt:', enhancedPrompt);
+    const isPremiumHighQuality = quality === 'high' && isPaidMember(membershipLevel);
+    const maxRetries = isPremiumHighQuality ? 3 : 1; // More retries for premium high quality
+    let imageUrl: string | null = null;
+    let isValid = false;
+    let attempts = 0;
+
+    while (attempts < maxRetries && !isValid) {
+      attempts++;
+      console.log(`Generation attempt ${attempts} of ${maxRetries}`);
+      
+      // Generate the image
+      imageUrl = await generateImage(enhancedPrompt, quality);
+      
+      if (!imageUrl) {
+        throw new Error('Failed to generate image');
+      }
+
+      // Only validate for premium members with high quality selected
+      if (isPremiumHighQuality) {
+        console.log('Premium high quality selected - validating image quality...');
+        isValid = await validateImageQuality(imageUrl);
+        
+        if (!isValid && attempts < maxRetries) {
+          console.log('Image validation failed, retrying...');
+          // Small delay before retry to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      } else {
+        // For non-premium or non-high quality, skip validation
+        isValid = true;
+      }
+    }
+
+    if (!imageUrl) {
+      throw new Error('Failed to generate a valid image after multiple attempts');
+    }
+
+    // Save the generated image to the database if user is authenticated
+    if (user?.id) {
+      console.log('Saving image to database with details:', {
+        userId: user.id,
+        prompt: prompt.substring(0, 50) + (prompt.length > 50 ? '...' : ''),
+        privacy: effectivePrivacy,
+        quality,
+        isPaidMember: isPaidMember(membershipLevel)
+      });
+      
+      try {
+        // Save the generated image with all required fields
+        console.log('Calling saveGeneratedImage with privacy:', effectivePrivacy);
+        const savedImage = await saveGeneratedImage(
+          user.id,
+          prompt,
+          imageUrl,
+          effectivePrivacy,
+          {
+            // Only include fields that exist in the GeneratedImage type
+            width: 1024,
+            height: 1024,
+            model: 'dall-e-3',
+            style: quality === 'high' ? 'vivid' : 'natural',
+            detail: quality === 'high' ? 'high' : 'low',
+            negative_prompt: '',
+            steps: quality === 'high' ? 50 : 30,
+            cfg_scale: 7.5,
+            sampler: 'dpmpp_2m',
+            upscale: quality === 'high',
+            karras: true
+          }
+        );
+        
+        console.log('Image saved successfully. ID:', savedImage?.id);
+        // Image count is now tracked by the generated_images table
+        // No need for a separate counter
+      } catch (saveError) {
+        console.error('Error saving image to database:', saveError);
+        // Don't fail the whole operation if saving to DB fails
+        // The user still gets their image, we just might not be able to track it
+      }
+    }
+
+    return imageUrl;
+  } catch (error) {
+    console.error('Error in generateClipArt:', error);
+    throw error;
+  }
+}
+
+// For backward compatibility
+export async function generateMultipleClipArts(
+  prompt: string, 
+  count: number = 1, 
+  user: any = null
+): Promise<string[]> {
+  console.log(`Generating ${count} cliparts with prompt:`, prompt);
+  
+  if (count <= 0) {
+    return [];
+  }
+  
+  try {
+    const results = [];
+    for (let i = 0; i < count; i++) {
+      const result = await generateClipArt(prompt, user);
+      results.push(result);
+    }
+    return results;
+  } catch (error: unknown) {
+    console.error('Error in generateMultipleClipArts:', error);
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('Failed to generate multiple cliparts');
+  }
+}
