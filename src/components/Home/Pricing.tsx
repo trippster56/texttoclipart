@@ -1,9 +1,15 @@
 import React, { useState } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import { handleCheckout } from '../../utils/stripe';
+import { toast } from 'react-hot-toast';
 import { Check, Zap, CreditCard } from 'lucide-react';
 import { subscriptionPlans, creditPackages } from '../../utils/mockData';
+import { SubscriptionTier } from '../../types';
 
 const Pricing: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'subscriptions' | 'credits'>('subscriptions');
+  const { user, isAuthenticated } = useAuth();
+  const [isLoading, setIsLoading] = useState<Record<string, boolean>>({});
 
   return (
     <div className="bg-white py-24">
@@ -91,11 +97,56 @@ const Pricing: React.FC = () => {
                 </div>
 
                 <div className="relative z-20 mt-8">
-                  <a
-                    href={plan.tier === 'free' || plan.tier === 'basic' ? 
-                         (plan.tier === 'free' ? '/signup' : '/signup?plan=basic') : 
-                         '#'}
-                    className={`block w-full py-3 px-6 border rounded-md text-center font-medium ${
+                  <button
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      
+                      if (!isAuthenticated) {
+                        window.location.href = '/login';
+                        return;
+                      }
+
+                      if (plan.tier === 'free') {
+                        window.location.href = '/signup';
+                        return;
+                      }
+
+                      if (plan.tier === 'premium' || plan.tier === 'enterprise') {
+                        return;
+                      }
+
+                      try {
+                        setIsLoading(prev => ({ ...prev, [plan.id]: true }));
+                        // Get the appropriate price ID based on the plan
+                        let priceId = '';
+                        const tier = plan.tier as SubscriptionTier;
+                        switch(tier) {
+                          case 'basic':
+                            priceId = import.meta.env.VITE_STRIPE_PRICE_BASIC_MONTHLY || '';
+                            break;
+                          case 'premium':
+                            priceId = import.meta.env.VITE_STRIPE_PRICE_PREMIUM_MONTHLY || '';
+                            break;
+                          case 'enterprise':
+                            priceId = import.meta.env.VITE_STRIPE_PRICE_ENTERPRISE_MONTHLY || '';
+                            break;
+                          default:
+                            priceId = '';
+                        }
+                        
+                        if (!priceId) {
+                          throw new Error('Price ID not configured for this plan');
+                        }
+                        await handleCheckout(priceId, user!.id, 'subscription');
+                      } catch (error) {
+                        console.error('Error starting checkout:', error);
+                        toast.error('Failed to start checkout. Please try again.');
+                      } finally {
+                        setIsLoading(prev => ({ ...prev, [plan.id]: false }));
+                      }
+                    }}
+                    disabled={isLoading[plan.id] || plan.tier === 'premium' || plan.tier === 'enterprise'}
+                    className={`w-full py-3 px-6 border rounded-md text-center font-medium ${
                       plan.tier === 'premium'
                         ? 'bg-teal-600 border-transparent text-white hover:bg-teal-700'
                         : (plan.tier === 'free' || plan.tier === 'basic')
@@ -104,15 +155,17 @@ const Pricing: React.FC = () => {
                     } ${
                       (plan.tier === 'premium' || plan.tier === 'enterprise') ? 'pointer-events-none' : ''
                     }`}
-                    onClick={(e) => {
-                      if (plan.tier === 'premium' || plan.tier === 'enterprise') {
-                        e.preventDefault();
-                      }
-                    }}
                   >
-                    {plan.tier === 'free' ? 'Sign up to get started' : 
-                     plan.tier === 'basic' ? 'Get Started' : 'Coming Soon'}
-                  </a>
+                    {isLoading[plan.id] ? (
+                      'Processing...'
+                    ) : plan.tier === 'free' ? (
+                      'Sign up to get started'
+                    ) : plan.tier === 'basic' ? (
+                      'Get Started'
+                    ) : (
+                      'Coming Soon'
+                    )}
+                  </button>
                 </div>
               </div>
             ))}
@@ -151,9 +204,48 @@ const Pricing: React.FC = () => {
                       </div>
                       <div className="mt-6">
                         <button
-                          className="w-full bg-teal-600 border border-transparent rounded-md py-2 px-4 flex items-center justify-center text-base font-medium text-white hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500"
+                          onClick={async (e) => {
+                            e.preventDefault();
+                            
+                            if (!isAuthenticated) {
+                              window.location.href = '/login';
+                              return;
+                            }
+
+
+                            try {
+                              setIsLoading(prev => ({ ...prev, [pkg.id]: true }));
+                              // Get the appropriate price ID based on the package
+                              let priceId = '';
+                              switch(pkg.id) {
+                                case 'credit-5':
+                                  priceId = import.meta.env.VITE_STRIPE_PRICE_CREDITS_STARTER || '';
+                                  break;
+                                case 'credit-15':
+                                  priceId = import.meta.env.VITE_STRIPE_PRICE_CREDITS_CREATOR || '';
+                                  break;
+                                case 'credit-30':
+                                  priceId = import.meta.env.VITE_STRIPE_PRICE_CREDITS_PRO || '';
+                                  break;
+                                default:
+                                  priceId = '';
+                              }
+                              
+                              if (!priceId) {
+                                throw new Error('Price ID not configured for this package');
+                              }
+                              await handleCheckout(priceId, user!.id, 'payment');
+                            } catch (error) {
+                              console.error('Error starting checkout:', error);
+                              toast.error('Failed to start checkout. Please try again.');
+                            } finally {
+                              setIsLoading(prev => ({ ...prev, [pkg.id]: false }));
+                            }
+                          }}
+                          disabled={isLoading[pkg.id]}
+                          className="w-full bg-teal-600 border border-transparent rounded-md py-2 px-4 flex items-center justify-center text-base font-medium text-white hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          Buy Now
+                          {isLoading[pkg.id] ? 'Processing...' : 'Buy Now'}
                         </button>
                       </div>
                     </div>

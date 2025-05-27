@@ -1,7 +1,9 @@
 import React from 'react';
 import { createBrowserRouter, RouterProvider, RouteObject } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
+import { Toaster } from 'react-hot-toast';
 import ProtectedRoute from './components/ProtectedRoute';
+import StripeProvider from './components/StripeProvider';
 import HomePage from './pages/HomePage';
 import CreatePage from './pages/CreatePage';
 import LoginPage from './pages/LoginPage';
@@ -101,7 +103,10 @@ const router = createBrowserRouter([
 function App() {
   return (
     <AuthProvider>
-      <RouterProvider router={router} />
+      <StripeProvider>
+        <Toaster position="top-right" />
+        <RouterProvider router={router} />
+      </StripeProvider>
     </AuthProvider>
   );
 }

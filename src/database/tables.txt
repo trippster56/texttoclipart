@@ -1,0 +1,85 @@
+-- credit_transactions table --
+id-uuid
+
+user_id-uuid
+    Has a foreign key relation toauth.users.id
+amount-int4
+
+type-text
+
+created_at-timestamptz
+
+-- image_usage table --
+id-uuid
+
+user_id-uuid
+    Has a foreign key relation toauth.users.id
+
+month-text
+
+count-int4
+
+created_at-timestamptz
+
+updated_at-timestamptz
+
+-- membership_plans table -- 
+id-text
+
+name-text
+
+max_images-int4
+
+created_at-timestamptz
+
+## Optional Fields ##
+
+price_monthly-numeric
+
+price_yearly-numeric
+
+features-jsonb
+
+-- profiles table --
+id-uuid
+Has a foreign key relation toauth.users.id
+
+## Optional Fields ##
+
+updated_at-timestamptz
+
+full_name-text
+
+avatar_url-text
+
+username-text
+
+-- user_credit_balance table --
+
+user_id-uuid
+
+balance-int8
+
+-- user_memberships table -- 
+
+id-uuid
+
+user_id-uuid
+    Has a foreign key relation toauth.users.id
+
+plan_id-text
+    Has a foreign key relation topublic.membership_plans.id
+
+status-text
+
+current_period_start-timestamptz
+
+current_period_end-timestamptz
+
+created_at-timestamptz
+
+updated_at-timestamptz
+
+ ## Optional Fields ##
+
+cancel_at_period_end-bool

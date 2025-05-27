@@ -21,14 +21,14 @@ export const creditPackages: CreditPackage[] = [
   {
     id: 'credit-15',
     name: 'Creator Pack',
-    credits: 15,
+    credits: 12,
     price: 12.99,
     bonus: 2, // 2 bonus credits
   },
   {
     id: 'credit-30',
     name: 'Pro Pack',
-    credits: 30,
+    credits: 25,
     price: 24.99,
     bonus: 5, // 5 bonus credits
   },

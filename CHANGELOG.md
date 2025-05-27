@@ -1,6 +1,44 @@
 # Changelog
-
+REACT + VITE APPLICATION
 All notable changes to this project will be documented in this file.
+
+## [2025-05-27 14:00:00] - IN PROGRESS
+### Webhook Implementation (Work in Progress)
+- Currently implementing Vite-compatible webhook handler
+- Setting up API route for Stripe webhook events
+- In the process of adding error handling and logging
+- Testing webhook integration with ngrok
+
+### Known Issues
+- Webhook endpoint routing needs final testing
+- Dependency conflicts being resolved
+- Error handling and verification in progress
+
+## [2025-05-24 22:59:00]
+### Added
+- Implemented Stripe webhook handler for processing payment events
+- Added support for both subscription and one-time credit purchases
+- Integrated with existing user_memberships table for subscription management
+- Added helper functions for credit package handling
+- Set up ngrok for local webhook testing
+
+### Changed
+- Updated environment variables for Stripe webhook secrets
+- Improved error handling in payment processing
+- Enhanced logging for webhook events
+
+## [2025-05-24 13:55:00]
+### Added
+- Integrated Stripe for payment processing
+- Added Stripe API keys to environment configuration
+- Created payment processing workflow for credit purchases
+- Added pricing page with subscription and credit options
+- Implemented secure checkout flow with Stripe Elements
+
+### Changed
+- Updated environment variable structure for payment processing
+- Modified pricing component to handle payment flows
+- Improved error handling for payment-related operations
 
 ## [2025-05-23 11:20:00]
 ### Changed
