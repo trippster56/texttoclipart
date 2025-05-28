@@ -1,10 +1,10 @@
-import { buffer } from 'micro';
-import { NextApiRequest, NextApiResponse } from 'next';
 import Stripe from 'stripe';
+import { NextApiRequest, NextApiResponse } from 'next';
 import { createClient } from '@supabase/supabase-js';
+import { buffer } from 'micro';
 
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
-  apiVersion: '2023-10-16',
+  apiVersion: '2022-11-15',
 });
 
 const supabase = createClient(
@@ -19,7 +19,6 @@ export const config = {
   },
 };
 
-// Add proper headers to prevent CORS issues
 export const headers = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',  // Allow POST and OPTIONS (for CORS preflight)
@@ -28,17 +27,27 @@ export const headers = {
 
 // Helper to get user ID from email
 async function getUserIdByEmail(email: string): Promise<string | null> {
-  const { data, error } = await supabase
-    .from('users')
-    .select('id')
-    .eq('email', email)
-    .single();
-  
-  return error ? null : data.id;
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .single();
+
+    if (error) {
+      console.error('Error getting user ID:', error);
+      return null;
+    }
+
+    return data?.id || null;
+  } catch (error) {
+    console.error('Database error:', error);
+    return null;
+  }
 }
 
 // Handle successful checkout
-async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Session) {
+async function handleCheckoutSessionCompleted(session: Stripe.Response<Stripe.Checkout.Session>) {
   console.log('Checkout session completed:', session.id);
   
   if (!session.customer_email) {
@@ -81,73 +90,87 @@ async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Session) 
 
 // Handle subscription updates
 async function handleSubscriptionUpdate(subscription: Stripe.Response<Stripe.Subscription>) {
-  console.log('Subscription updated:', subscription.id);
-  
-  const customer = await stripe.customers.retrieve(subscription.customer as string);
-  if (!customer.data.email) {
-    console.error('No email found for customer:', subscription.customer);
-    return;
-  }
+  try {
+    console.log('Subscription updated:', subscription.id);
+    
+    // Get customer details from subscription
+    const customer = await stripe.customers.retrieve(subscription.customer as string);
+    if (!customer) {
+      console.error('No customer found:', subscription.customer);
+      return;
+    }
 
-  const userId = await getUserIdByEmail(customer.email);
-  if (!userId) {
-    console.error('User not found for subscription:', customer.email);
-    return;
-  }
+    // Get user ID from email
+    const customerData = customer as Stripe.Customer;
+    const userId = await getUserIdByEmail(customerData.email!);
+    if (!userId) {
+      console.error('No user found for email:', customerData.email);
+      return;
+    }
 
-  // Get plan ID from the subscription
-  const priceId = subscription.items.data[0].price.id;
-  const planId = getPlanIdFromPriceId(priceId);
+    // Update user's subscription status in Supabase
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({
+        subscription_status: subscription.status,
+        subscription_id: subscription.id,
+        subscription_plan: subscription.items.data[0].plan.id,
+        subscription_end_date: subscription.current_period_end * 1000
+      })
+      .eq('id', userId)
+      .single();
 
-  // Update user's membership in the database
-  const { error } = await supabase
-    .from('user_memberships')
-    .upsert({
-      user_id: userId,
-      plan_id: planId,
-      status: subscription.status,
-      current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-      updated_at: new Date().toISOString()
-    }, {
-      onConflict: 'user_id'  // This ensures we update existing records
-    });
+    if (updateError) {
+      console.error('Error updating subscription:', updateError);
+      return;
+    }
 
-  if (error) {
-    console.error('Error updating membership:', error);
-  } else {
-    console.log(`Updated membership for user ${customer.email} to status ${subscription.status}`);
+    console.log('Subscription updated successfully for user:', userId);
+  } catch (error) {
+    console.error('Error in handleSubscriptionUpdate:', error);
+    throw error;
   }
 }
 
 // Handle failed payments
-async function handlePaymentFailed(invoice: Stripe.Invoice) {
-  console.log('Payment failed for invoice:', invoice.id);
-  
-  if (!invoice.customer_email) {
-    console.error('No customer email in invoice');
-    return;
-  }
+async function handlePaymentFailed(invoice: Stripe.Response<Stripe.Invoice>) {
+  try {
+    console.log('Payment failed for invoice:', invoice.id);
+    
+    // Get customer details from invoice
+    const customer = await stripe.customers.retrieve(invoice.customer as string);
+    if (!customer) {
+      console.error('No customer found:', invoice.id);
+      return;
+    }
 
-  const userId = await getUserIdByEmail(invoice.customer_email);
-  if (!userId) {
-    console.error('User not found for failed payment:', invoice.customer_email);
-    return;
-  }
+    // Get user ID from email
+    const customerData = customer as Stripe.Customer;
+    const userId = await getUserIdByEmail(customerData.email!);
+    if (!userId) {
+      console.error('No user found for email:', customerData.email);
+      return;
+    }
 
-  // Update membership status to past_due
-  const { error } = await supabase
-    .from('user_memberships')
-    .update({
-      status: 'past_due',
-      updated_at: new Date().toISOString()
-    })
-    .eq('user_id', userId);
+    // Update user's subscription status in Supabase
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({
+        subscription_status: 'past_due',
+        subscription_end_date: null
+      })
+      .eq('id', userId)
+      .single();
 
-  if (error) {
-    console.error('Error updating membership status:', error);
-  } else {
-    console.log(`Updated membership status to past_due for user ${invoice.customer_email}`);
+    if (updateError) {
+      console.error('Error updating subscription:', updateError);
+      return;
+    }
+
+    console.log('Payment failed status updated for user:', userId);
+  } catch (error) {
+    console.error('Error in handlePaymentFailed:', error);
+    throw error;
   }
 }
 
@@ -161,21 +184,36 @@ function getCreditsForPackage(packageId: string): number {
   return packages[packageId] || 0;
 }
 
-function getPlanIdFromPriceId(priceId: string): string {
-  // Map Stripe price IDs to your plan IDs
-  const priceToPlanMap: Record<string, string> = {
-    [process.env.VITE_STRIPE_PRICE_BASIC_MONTHLY || '']: 'basic',
-    [process.env.VITE_STRIPE_PRICE_PREMIUM_MONTHLY || '']: 'premium',
-    [process.env.VITE_STRIPE_PRICE_ENTERPRISE_MONTHLY || '']: 'enterprise'
-  };
-  return priceToPlanMap[priceId] || 'free';
+// Process Stripe events
+async function processStripeEvent(event: Stripe.Event): Promise<void> {
+  try {
+    console.log('Processing Stripe event:', event.type);
+    
+    switch (event.type) {
+      case 'checkout.session.completed':
+        await handleCheckoutSessionCompleted(event.data.object as Stripe.Response<Stripe.Checkout.Session>);
+        break;
+      case 'customer.subscription.updated':
+        await handleSubscriptionUpdate(event.data.object as Stripe.Response<Stripe.Subscription>);
+        break;
+      case 'invoice.payment_failed':
+        await handlePaymentFailed(event.data.object as Stripe.Response<Stripe.Invoice>);
+        break;
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+        break;
+    }
+  } catch (error) {
+    console.error('Error processing webhook:', error);
+    throw error;
+  }
 }
 
 // Main webhook handler
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
-) {
+): Promise<void> {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -183,12 +221,14 @@ export default async function handler(
 
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
+    console.log('OPTIONS request handled');
     res.status(200).end();
     return;
   }
 
   // Only allow POST requests from Stripe
   if (req.method !== 'POST') {
+    console.error('Non-POST request received');
     res.setHeader('Allow', 'POST');
     res.status(405).json({ 
       error: 'Only POST requests are allowed from Stripe',
@@ -196,75 +236,37 @@ export default async function handler(
     });
     return;
   }
-  // Normalize URL to prevent redirects
-  const normalizedUrl = req.url?.replace(/\/+$/, '');
-  const host = req.headers.host || 'www.texttoclipart.com';
-  const fullUrl = `https://${host}${normalizedUrl}`;
-  
-  console.log('Original Request URL:', req.url);
-  console.log('Normalized Request URL:', normalizedUrl);
-  console.log('Full Request URL:', fullUrl);
-  console.log('Host:', host);
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).end('Method Not Allowed');
-  }
-
-  console.log('\n=== NEW WEBHOOK REQUEST ===');
-  console.log('Method:', req.method);
-  console.log('Headers:', JSON.stringify(req.headers, null, 2));
-  console.log('Original Request URL:', req.url);
-  console.log('Normalized Request URL:', normalizedUrl);
-  console.log('Request IP:', req.headers['x-forwarded-for'] || req.socket.remoteAddress);
-
-  const sig = req.headers['stripe-signature'] as string;
-  console.log('Stripe Signature:', sig);
-
-  let event: Stripe.Event;
 
   try {
-    const rawBody = await buffer(req);
-    console.log('Raw Body Length:', rawBody.length);
+    // Get Stripe signature
+    const sig = req.headers['stripe-signature'] as string | undefined;
+    if (!sig) {
+      console.error('No Stripe signature provided');
+      res.status(400).json({ error: 'Missing Stripe signature' });
+      return;
+    }
 
-    event = stripe.webhooks.constructEvent(
+    // Get raw body
+    const rawBody = await buffer(req);
+    console.log('Raw body length:', rawBody.length);
+    console.log('Stripe signature:', sig);
+
+    // Verify webhook event
+    const event = stripe.webhooks.constructEvent(
       rawBody,
       sig,
       process.env.VITE_STRIPE_WEBHOOK_SECRET || ''
     );
+    console.log('Verified event:', event.id, event.type);
 
-    console.log('Webhook verified:', event.type);
-    console.log('Event data:', JSON.stringify(event.data.object, null, 2));
-
-    switch (event.type) {
-      case 'checkout.session.completed':
-        await handleCheckoutSessionCompleted(event.data.object as Stripe.Checkout.Session);
-        break;
-      case 'customer.subscription.created':
-      case 'customer.subscription.updated':
-        await handleSubscriptionUpdate(event.data.object as Stripe.Subscription);
-        break;
-      case 'invoice.payment_failed':
-        await handlePaymentFailed(event.data.object as Stripe.Invoice);
-        break;
-      case 'invoice.paid':
-        // Handle successful payment for subscription
-        const invoice = event.data.object as Stripe.Invoice;
-        if (!invoice.subscription) {
-          const subscription = await stripe.subscriptions.retrieve(
-            typeof invoice.subscription === 'string' 
-              ? invoice.subscription 
-              : invoice.subscription.id
-          );
-          await handleSubscriptionUpdate(subscription);
-        }
-        break;
-      default:
-        console.log(`Unhandled event type: ${event.type}`);
-    }
-
-    res.json({ received: true });
+    // Process the event
+    await processStripeEvent(event);
+    
+    // Return success status
+    res.status(200).json({ message: 'Webhook processed successfully' });
   } catch (error) {
-    console.error('Error handling webhook:', error);
-    res.status(500).json({ error: 'Error processing webhook' });
+    console.error('Error processing webhook:', error);
+    res.status(400).json({ error: 'Webhook processing error' });
+  }
   }
 }
