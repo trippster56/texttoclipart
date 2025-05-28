@@ -4,7 +4,7 @@ import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
-  apiVersion: '2023-10-16',
+  apiVersion: '2025-04-30.basil',
 });
 
 const supabase = createClient(
@@ -72,11 +72,11 @@ async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Session) 
 }
 
 // Handle subscription updates
-async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
+async function handleSubscriptionUpdate(subscription: Stripe.Response<Stripe.Subscription>) {
   console.log('Subscription updated:', subscription.id);
   
   const customer = await stripe.customers.retrieve(subscription.customer as string);
-  if (!customer.email) {
+  if (!customer.data.email) {
     console.error('No email found for customer:', subscription.customer);
     return;
   }
@@ -168,6 +168,15 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
+  // Normalize URL to prevent redirects
+  const normalizedUrl = req.url?.replace(/\/+$/, '');
+  const host = req.headers.host || 'www.texttoclipart.com';
+  const fullUrl = `https://${host}${normalizedUrl}`;
+  
+  console.log('Original Request URL:', req.url);
+  console.log('Normalized Request URL:', normalizedUrl);
+  console.log('Full Request URL:', fullUrl);
+  console.log('Host:', host);
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).end('Method Not Allowed');
@@ -176,12 +185,19 @@ export default async function handler(
   console.log('\n=== NEW WEBHOOK REQUEST ===');
   console.log('Method:', req.method);
   console.log('Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('Original Request URL:', req.url);
+  console.log('Normalized Request URL:', normalizedUrl);
+  console.log('Request IP:', req.headers['x-forwarded-for'] || req.socket.remoteAddress);
 
   const sig = req.headers['stripe-signature'] as string;
+  console.log('Stripe Signature:', sig);
+
   let event: Stripe.Event;
 
   try {
     const rawBody = await buffer(req);
+    console.log('Raw Body Length:', rawBody.length);
+
     event = stripe.webhooks.constructEvent(
       rawBody,
       sig,
@@ -205,7 +221,7 @@ export default async function handler(
       case 'invoice.paid':
         // Handle successful payment for subscription
         const invoice = event.data.object as Stripe.Invoice;
-        if (invoice.subscription) {
+        if (!invoice.subscription) {
           const subscription = await stripe.subscriptions.retrieve(
             typeof invoice.subscription === 'string' 
               ? invoice.subscription 
