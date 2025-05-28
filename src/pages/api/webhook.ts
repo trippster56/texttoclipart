@@ -4,7 +4,7 @@ import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
-  apiVersion: '2025-04-30.basil',
+  apiVersion: '2023-10-16',
 });
 
 const supabase = createClient(
@@ -15,7 +15,15 @@ const supabase = createClient(
 export const config = {
   api: {
     bodyParser: false,
+    method: ['POST']
   },
+};
+
+// Add proper headers to prevent CORS issues
+export const headers = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST',
+  'Access-Control-Allow-Headers': 'Content-Type, stripe-signature'
 };
 
 // Helper to get user ID from email
@@ -168,6 +176,18 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  // Only allow POST requests
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    res.status(405).json({ error: 'Method Not Allowed' });
+    return;
+  }
   // Normalize URL to prevent redirects
   const normalizedUrl = req.url?.replace(/\/+$/, '');
   const host = req.headers.host || 'www.texttoclipart.com';
