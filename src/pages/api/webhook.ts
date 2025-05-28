@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buffer } from 'micro';
 
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
-  apiVersion: '2022-11-15',
+  apiVersion: '2025-04-30',
 });
 
 const supabase = createClient(
@@ -15,13 +15,13 @@ const supabase = createClient(
 export const config = {
   api: {
     bodyParser: false,
-    method: ['POST']  // Only allow POST requests from Stripe
+    methods: ['POST']  // Only allow POST requests from Stripe
   },
 };
 
 export const headers = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',  // Allow POST and OPTIONS (for CORS preflight)
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, stripe-signature'
 };
 
