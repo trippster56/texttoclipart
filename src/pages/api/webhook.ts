@@ -15,14 +15,14 @@ const supabase = createClient(
 export const config = {
   api: {
     bodyParser: false,
-    method: ['POST']
+    method: ['POST']  // Only allow POST requests from Stripe
   },
 };
 
 // Add proper headers to prevent CORS issues
 export const headers = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',  // Allow POST and OPTIONS (for CORS preflight)
   'Access-Control-Allow-Headers': 'Content-Type, stripe-signature'
 };
 
@@ -176,16 +176,24 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
-  // Handle preflight requests
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, stripe-signature');
+
+  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
 
-  // Only allow POST requests
+  // Only allow POST requests from Stripe
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
-    res.status(405).json({ error: 'Method Not Allowed' });
+    res.status(405).json({ 
+      error: 'Only POST requests are allowed from Stripe',
+      allowed_methods: ['POST']
+    });
     return;
   }
   // Normalize URL to prevent redirects
