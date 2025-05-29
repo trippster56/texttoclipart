@@ -15,13 +15,13 @@ const supabase = createClient(
 export const config = {
   api: {
     bodyParser: false,
-    methods: ['POST', 'OPTIONS']  // Allow POST and OPTIONS for CORS
+    methods: ['POST']  // Only allow POST requests from Stripe
   },
 };
 
 export const headers = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'POST',
   'Access-Control-Allow-Headers': 'Content-Type, stripe-signature'
 };
 
