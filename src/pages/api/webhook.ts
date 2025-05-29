@@ -1,7 +1,7 @@
 import Stripe from 'stripe';
-import { NextApiRequest, NextApiResponse } from 'next';
 import { createClient } from '@supabase/supabase-js';
 import { buffer } from 'micro';
+import { NextApiRequest, NextApiResponse } from 'next';
 
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
   apiVersion: '2025-05-28.basil',
@@ -223,7 +223,7 @@ export default async function handler(
 
   try {
     // Get Stripe signature
-    const sig = req.headers['stripe-signature'] as string | undefined;
+    const sig = req.headers['stripe-signature'] as string;
     if (!sig) {
       console.error('No Stripe signature provided');
       res.status(400).json({ error: 'Missing Stripe signature' });
@@ -248,8 +248,10 @@ export default async function handler(
     
     // Return success status
     res.status(200).json({ message: 'Webhook processed successfully' });
+    return;
   } catch (error) {
     console.error('Error processing webhook:', error);
     res.status(400).json({ error: 'Webhook processing error' });
+    return;
   }
 }
