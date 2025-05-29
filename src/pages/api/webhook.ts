@@ -212,9 +212,11 @@ export default async function handler(
   req: Request,
   res: Response
 ) {
-  // Only allow POST requests from Stripe
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, stripe-signature');
     res.status(200).end();
     return;
   }
@@ -242,7 +244,7 @@ export default async function handler(
 
     // Verify webhook event
     const event = stripe.webhooks.constructEvent(
-      rawBody,
+      rawBody.toString(),
       sig,
       process.env.VITE_STRIPE_WEBHOOK_SECRET || ''
     );
