@@ -1,7 +1,7 @@
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 import { buffer } from 'micro';
-import { NextApiRequest, NextApiResponse } from 'next';
+import type { Request, Response } from 'express';
 
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
   apiVersion: '2025-05-28.basil',
@@ -14,14 +14,13 @@ const supabase = createClient(
 
 export const config = {
   api: {
-    bodyParser: false,
-    methods: ['POST']  // Only allow POST requests from Stripe
+    bodyParser: false
   },
 };
 
 export const headers = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, stripe-signature'
 };
 
@@ -210,14 +209,20 @@ async function processStripeEvent(event: Stripe.Event): Promise<void> {
 }
 
 export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse
-): Promise<void> {
+  req: Request,
+  res: Response
+) {
   // Only allow POST requests from Stripe
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
   if (req.method !== 'POST') {
     console.error('Non-POST request received');
     res.setHeader('Allow', 'POST');
-    res.status(405).end('Method Not Allowed');
+    res.status(405).json({ error: 'Method Not Allowed', allowed_methods: ['POST'] });
     return;
   }
 
