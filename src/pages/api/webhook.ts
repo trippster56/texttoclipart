@@ -213,20 +213,11 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ): Promise<void> {
-  // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-
   // Only allow POST requests from Stripe
   if (req.method !== 'POST') {
     console.error('Non-POST request received');
     res.setHeader('Allow', 'POST');
-    res.status(405).json({ 
-      error: 'Only POST requests are allowed from Stripe',
-      allowed_methods: ['POST']
-    });
+    res.status(405).end('Method Not Allowed');
     return;
   }
 
