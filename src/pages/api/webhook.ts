@@ -208,6 +208,7 @@ async function processStripeEvent(event: Stripe.Event): Promise<void> {
 }
 
 export default async function handler(event: any) {
+  console.log('Webhook received:', event);
   const request = event.request;
   // Handle CORS preflight
   if (request.method === 'OPTIONS') {
@@ -221,6 +222,7 @@ export default async function handler(event: any) {
     });
   }
 
+  // Only allow POST requests
   if (request.method !== 'POST') {
     console.error('Non-POST request received');
     return new Response(
@@ -232,6 +234,46 @@ export default async function handler(event: any) {
           'Allow': 'POST'
         }
       }
+    );
+  }
+
+  try {
+    // Get Stripe signature
+    const sig = request.headers.get('stripe-signature');
+    if (!sig) {
+      console.error('No Stripe signature provided');
+      return new Response(
+        JSON.stringify({ error: 'Missing Stripe signature' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Get raw body
+    const rawBody = await request.text();
+    console.log('Raw body length:', rawBody.length);
+    console.log('Stripe signature:', sig);
+
+    // Verify webhook event
+    const event = stripe.webhooks.constructEvent(
+      rawBody,
+      sig,
+      process.env.VITE_STRIPE_WEBHOOK_SECRET || ''
+    );
+    console.log('Verified event:', event.id, event.type);
+
+    // Process the event
+    await processStripeEvent(event);
+    
+    // Return success status
+    return new Response(
+      JSON.stringify({ message: 'Webhook processed successfully' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  } catch (error) {
+    console.error('Error processing webhook:', error);
+    return new Response(
+      JSON.stringify({ error: 'Webhook processing error' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
     );
   }
 
