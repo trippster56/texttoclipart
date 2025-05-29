@@ -35,11 +35,11 @@ npm run dev
 
 ## Deployment
 
-This project is set up for deployment on Netlify. To deploy:
+This project is set up for deployment on Vercel. To deploy:
 
 1. Push your code to a GitHub repository
-2. Connect the repository to Netlify
-3. Add your environment variables in the Netlify dashboard
+2. Connect the repository to Vercel
+3. Add your environment variables in the Vercel dashboard
 4. Deploy!
 
 ## Environment Variables
