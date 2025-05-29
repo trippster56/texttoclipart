@@ -1,13 +1,41 @@
 # Changelog
 REACT + VITE APPLICATION
+Using VERCEL for deployment
+end point url for stripe is https://www.texttoclipart.com/api/stripe/webhook
 All notable changes to this project will be documented in this file.
+
+## [2025-05-29 14:29:00]
+### Fixed
+- Updated Vercel routing configuration to properly handle API routes:
+  - Added explicit route for `/api/stripe/webhook`
+  - Fixed API route handling in Vercel configuration
+  - Added proper CORS headers for API routes
+  - Fixed client-side routing while maintaining API route access
+
+- Updated Stripe webhook handler implementation:
+  - Changed to use Vercel's API route format instead of Express
+  - Fixed raw body handling for Stripe signature verification
+  - Added proper error logging and debugging
+  - Improved request handling for Vercel's event format
+  - Added logging to track webhook processing
+
+- Fixed CORS handling:
+  - Added proper CORS headers for OPTIONS requests
+  - Fixed CORS preflight response format
+  - Added proper Content-Type headers for responses
+
+### Changed
+- Updated webhook processing flow:
+  - Added explicit request method checking
+  - Improved error response formatting
+  - Added proper event verification logging
+  - Changed raw body handling to use text() instead of arrayBuffer()
 
 ## [2025-05-28 15:23:00]
 ### Fixed
 - Resolved TypeScript errors in Stripe webhook handler
 - Fixed customer email handling with proper typing
 - Removed unused getPlanIdFromPriceId function
-- Fixed syntax errors in webhook handler
 - Updated Stripe API version to latest stable (2025-04-30)
 - Upgraded Stripe package to latest version
 
