@@ -15,7 +15,7 @@ const supabase = createClient(
 export const config = {
   api: {
     bodyParser: false,
-    methods: ['POST']  // Only allow POST requests from Stripe
+    methods: ['POST', 'OPTIONS']  // Allow POST and OPTIONS for CORS
   },
 };
 
@@ -209,19 +209,12 @@ async function processStripeEvent(event: Stripe.Event): Promise<void> {
   }
 }
 
-// Main webhook handler
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ): Promise<void> {
-  // Set CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, stripe-signature');
-
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
-    console.log('OPTIONS request handled');
     res.status(200).end();
     return;
   }
