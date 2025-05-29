@@ -1,7 +1,6 @@
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
-import { buffer } from 'micro';
-import type { Request, Response } from 'express';
+import { Buffer } from 'buffer';
 
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
   apiVersion: '2025-05-28.basil',
@@ -208,43 +207,53 @@ async function processStripeEvent(event: Stripe.Event): Promise<void> {
   }
 }
 
-export default async function handler(
-  req: Request,
-  res: Response
-) {
+export default async function handler(event: any) {
+  const request = event.request;
   // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, stripe-signature');
-    res.status(200).end();
-    return;
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, stripe-signature'
+      }
+    });
   }
 
-  if (req.method !== 'POST') {
+  if (request.method !== 'POST') {
     console.error('Non-POST request received');
-    res.setHeader('Allow', 'POST');
-    res.status(405).json({ error: 'Method Not Allowed', allowed_methods: ['POST'] });
-    return;
+    return new Response(
+      JSON.stringify({ error: 'Method Not Allowed', allowed_methods: ['POST'] }),
+      {
+        status: 405,
+        headers: {
+          'Content-Type': 'application/json',
+          'Allow': 'POST'
+        }
+      }
+    );
   }
 
   try {
     // Get Stripe signature
-    const sig = req.headers['stripe-signature'] as string;
+    const sig = request.headers.get('stripe-signature');
     if (!sig) {
       console.error('No Stripe signature provided');
-      res.status(400).json({ error: 'Missing Stripe signature' });
-      return;
+      return new Response(
+        JSON.stringify({ error: 'Missing Stripe signature' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
     // Get raw body
-    const rawBody = await buffer(req);
-    console.log('Raw body length:', rawBody.length);
+    const rawBody = await request.arrayBuffer();
+    console.log('Raw body length:', rawBody.byteLength);
     console.log('Stripe signature:', sig);
 
     // Verify webhook event
     const event = stripe.webhooks.constructEvent(
-      rawBody.toString(),
+      Buffer.from(rawBody).toString(),
       sig,
       process.env.VITE_STRIPE_WEBHOOK_SECRET || ''
     );
@@ -254,11 +263,15 @@ export default async function handler(
     await processStripeEvent(event);
     
     // Return success status
-    res.status(200).json({ message: 'Webhook processed successfully' });
-    return;
+    return new Response(
+      JSON.stringify({ message: 'Webhook processed successfully' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
   } catch (error) {
     console.error('Error processing webhook:', error);
-    res.status(400).json({ error: 'Webhook processing error' });
-    return;
+    return new Response(
+      JSON.stringify({ error: 'Webhook processing error' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    );
   }
 }
