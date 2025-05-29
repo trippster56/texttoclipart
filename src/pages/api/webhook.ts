@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buffer } from 'micro';
 
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
-  apiVersion: '2025-04-30',
+  apiVersion: '2025-05-28.basil',
 });
 
 const supabase = createClient(
@@ -89,7 +89,7 @@ async function handleCheckoutSessionCompleted(session: Stripe.Response<Stripe.Ch
 }
 
 // Handle subscription updates
-async function handleSubscriptionUpdate(subscription: Stripe.Response<Stripe.Subscription>) {
+async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
   try {
     console.log('Subscription updated:', subscription.id);
     
@@ -115,7 +115,7 @@ async function handleSubscriptionUpdate(subscription: Stripe.Response<Stripe.Sub
         subscription_status: subscription.status,
         subscription_id: subscription.id,
         subscription_plan: subscription.items.data[0].plan.id,
-        subscription_end_date: subscription.current_period_end * 1000
+        subscription_end_date: subscription.items.data[0].current_period_end * 1000
       })
       .eq('id', userId)
       .single();
@@ -133,7 +133,7 @@ async function handleSubscriptionUpdate(subscription: Stripe.Response<Stripe.Sub
 }
 
 // Handle failed payments
-async function handlePaymentFailed(invoice: Stripe.Response<Stripe.Invoice>) {
+async function handlePaymentFailed(invoice: Stripe.Invoice) {
   try {
     console.log('Payment failed for invoice:', invoice.id);
     
@@ -267,6 +267,5 @@ export default async function handler(
   } catch (error) {
     console.error('Error processing webhook:', error);
     res.status(400).json({ error: 'Webhook processing error' });
-  }
   }
 }
