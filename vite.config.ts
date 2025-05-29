@@ -21,5 +21,10 @@ export default defineConfig({
         assetFileNames: `assets/[name].[ext]`
       }
     }
+  },
+  server: {
+    fs: {
+      strict: false
+    }
   }
 });

@@ -16,13 +16,10 @@
     {
       "source": "/api/(.*)",
       "destination": "/api/$1"
-    }
-  ],
-  "redirects": [
+    },
     {
       "source": "/(.*)",
-      "destination": "/index.html",
-      "statusCode": 200
+      "destination": "/index.html"
     }
   ]
 }
