@@ -8,7 +8,7 @@
     },
     {
       "source": "/(.*)",
-      "destination": "/index.html"
+      "destination": "/$1"
     }
   ],
   "headers": [
@@ -41,6 +41,12 @@
           "value": "Content-Type, stripe-signature"
         }
       ]
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
     }
   ]
 }
