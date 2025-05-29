@@ -25,6 +25,9 @@ export default defineConfig({
   server: {
     fs: {
       strict: false
+    },
+    headers: {
+      'Cache-Control': 'public, max-age=31536000'
     }
   }
 });

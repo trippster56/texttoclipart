@@ -3,7 +3,7 @@
   "outputDirectory": "dist",
   "headers": [
     {
-      "source": "/(.*)",
+      "source": "/.*\\.(js|css)$",
       "headers": [
         {
           "key": "Content-Type",
@@ -20,6 +20,13 @@
     {
       "source": "/(.*)",
       "destination": "/index.html"
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/index.html",
+      "permanent": false
     }
   ]
 }
