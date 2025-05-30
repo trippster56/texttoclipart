@@ -106,6 +106,27 @@ async function handleCheckoutSessionCompleted(session) {
   }
 }
 
+// Helper function to get customer email from Stripe
+async function getCustomerEmail(customer) {
+  try {
+    if (!customer) return null;
+    
+    const customerId = typeof customer === 'string' ? customer : customer.id;
+    if (!customerId) return null;
+    
+    // If we already have the email in the customer object, use it
+    if (customer.email) return customer.email;
+    if (customer.customer_email) return customer.customer_email;
+    
+    // Otherwise, fetch the customer from Stripe
+    const stripeCustomer = await stripe.customers.retrieve(customerId);
+    return stripeCustomer.email || null;
+  } catch (error) {
+    console.error('Error getting customer email:', error);
+    return null;
+  }
+}
+
 // Handle subscription events (created, updated)
 async function handleSubscriptionUpdate(subscription) {
   console.log('Subscription event:', subscription.id);
