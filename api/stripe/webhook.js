@@ -14,76 +14,58 @@ const supabase = createClient(
 );
 
 // Helper to get user ID from email or customer ID
-async function getUserId(customerEmail, customerId) {
-  console.log('Looking up user:', { customerEmail, customerId });
+async function getUserId(customerEmail, customerId, metadata = {}) {
+  console.log('Looking up user:', { customerEmail, customerId, metadata });
   
   try {
-    // First try to find by email if available
+    // First, check if we have a userId in the metadata
+    if (metadata && metadata.userId) {
+      console.log('Using userId from metadata:', metadata.userId);
+      return metadata.userId;
+    }
+
+    // If no metadata userId, try to find by email
     if (customerEmail) {
       console.log('Searching by email:', customerEmail);
       
-      // First get the auth user ID by email
-      const { data: authData, error: authError } = await supabase
-        .from('auth.users')
-        .select('id')
+      // Query the profiles table directly since we can't query auth.users
+      const { data: profileData, error: profileError } = await supabase
+        .from('profiles')
+        .select('id, email')
         .eq('email', customerEmail)
         .single();
 
-      console.log('Auth user lookup result:', { authData, authError });
+      console.log('Profile lookup by email result:', { profileData, profileError });
 
-      if (authData && !authError) {
-        // Then check the profiles table
-        const { data: profileData, error: profileError } = await supabase
-          .from('profiles')
-          .select('id, stripe_customer_id')
-          .eq('id', authData.id)
-          .single();
-
-        console.log('Profile lookup result:', { profileData, profileError });
-
-        if (profileData && !profileError) {
-          console.log(`Found user ${profileData.id} for email ${customerEmail}`);
-          return profileData.id;
-        } else if (profileError && profileError.code !== 'PGRST116') {
-          console.error('Error looking up profile:', profileError);
-        }
-      } else if (authError && authError.code !== 'PGRST116') {
-        console.error('Error looking up auth user:', authError);
+      if (profileData && !profileError) {
+        console.log(`Found user ${profileData.id} for email ${customerEmail}`);
+        return profileData.id;
+      } else if (profileError && profileError.code !== 'PGRST116') {
+        console.error('Error looking up profile by email:', profileError);
       }
     }
 
-    // If no email or user not found by email, try by customer ID
+    // If no email or user not found by email, try by customer ID in profiles
     if (customerId) {
-      console.log('Searching by customer ID:', customerId);
-      // Look up user by stripe_customer_id in profiles
-      const { data: customerProfileData, error: customerProfileError } = await supabase
+      console.log('Searching by customer ID in profiles:', customerId);
+      
+      // Look for the customer ID in the profiles table
+      const { data: profileData, error: profileError } = await supabase
         .from('profiles')
         .select('id')
         .eq('stripe_customer_id', customerId)
         .single();
 
-      // If found in profiles, return the user ID
-      if (customerProfileData && !customerProfileError) {
-        return customerProfileData.id;
-      }
-
-      // Fallback to profiles by ID if needed (in case customerId is actually a user ID)
-      const { data: profileData, error: profileError } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('id', customerId)
-        .single();
-
-      console.log('Customer ID lookup result:', { profileData, profileError });
+      console.log('Profile lookup by customer ID result:', { profileData, profileError });
 
       if (profileData && !profileError) {
         return profileData.id;
       } else if (profileError && profileError.code !== 'PGRST116') {
-        console.error('Error looking up profile by ID:', profileError);
+        console.error('Error looking up profile by customer ID:', profileError);
       }
     }
 
-    console.error('User not found for email/customer:', { customerEmail, customerId });
+    console.log('User not found for email/customer:', { customerEmail, customerId });
     return null;
   } catch (error) {
     console.error('Error in getUserId:', error);
@@ -94,48 +76,22 @@ async function getUserId(customerEmail, customerId) {
 // Handle successful checkout session
 async function handleCheckoutSessionCompleted(session) {
   console.log('Checkout session completed:', session.id);
-  console.log('Session data:', JSON.stringify({
-    id: session.id,
-    customer: session.customer,
-    customer_email: session.customer_email,
-    customer_details: session.customer_details,
-    metadata: session.metadata,
-    mode: session.mode,
-    subscription: session.subscription,
-    payment_intent: session.payment_intent
-  }, null, 2));
-  
+  console.log('Session data:', JSON.stringify(session, null, 2));
+
   try {
+    const customerEmail = session.customer_email || (session.customer_details?.email || null);
     const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
-    let customerEmail = session.customer_email || session.customer_details?.email;
     
-    // If no email in session, try to get it from the customer object
-    if ((!customerEmail || !customerId) && customerId) {
-      try {
-        console.log('Fetching customer details from Stripe for ID:', customerId);
-        const customer = await stripe.customers.retrieve(customerId);
-        console.log('Retrieved customer:', JSON.stringify({
-          id: customer.id,
-          email: customer.email,
-          name: customer.name,
-          metadata: customer.metadata
-        }, null, 2));
-        customerEmail = customer.email || customerEmail;
-      } catch (error) {
-        console.error('Error fetching customer:', error);
-      }
-    }
+    // Pass metadata to getUserId
+    const userId = await getUserId(customerEmail, customerId, session.metadata || {});
 
-    if (!customerEmail && !customerId) {
-      console.error('No customer email or ID found in session');
-      return;
-    }
-
-    const userId = await getUserId(customerEmail, customerId);
     if (!userId) {
       console.error('User not found for session:', session.id);
       return;
     }
+
+    console.log('Found user for session:', userId);
+    // Here you would typically update the user's subscription status
 
     // Handle different types of checkouts
     if (session.mode === 'subscription' && session.subscription) {
@@ -150,14 +106,19 @@ async function handleCheckoutSessionCompleted(session) {
   }
 }
 
-// Handle subscription events (created/updated)
+// Handle subscription events (created, updated)
 async function handleSubscriptionUpdate(subscription) {
   console.log('Subscription event:', subscription.id);
-  
+
   try {
     const customerId = typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id;
-    if (!customerId) {
-      console.error('No customer ID in subscription:', subscription.id);
+    const customerEmail = await getCustomerEmail(subscription.customer);
+    
+    // For subscription updates, we might not have metadata, so we'll rely on customer ID
+    const subUserId = await getUserId(customerEmail, customerId, subscription.metadata || {});
+
+    if (!subUserId) {
+      console.error('User not found for subscription:', subscription.id);
       return;
     }
 
@@ -216,13 +177,13 @@ async function handleSubscriptionUpdate(subscription) {
     const { error: updateError } = await supabase
       .from('profiles')
       .update({ stripe_customer_id: customerId })
-      .eq('id', userId);
+      .eq('id', subUserId);
 
     if (updateError) {
       console.error('Error updating profile with Stripe customer ID:', updateError);
     }
 
-    console.log('Membership updated for user:', userId);
+    console.log('Membership updated for user:', subUserId);
   } catch (error) {
     console.error('Error in handleSubscriptionUpdate:', error);
   }
