@@ -190,7 +190,7 @@ module.exports = async (req, res) => {
       return res.status(500).json({ error: 'Server configuration error' });
     }
     
-    if (!process.env.STRIPE_WEBHOOK_SECRET) {
+    if (!process.env.VITE_STRIPE_WEBHOOK_SECRET) {
       console.error('Stripe webhook secret not configured');
       return res.status(500).json({ error: 'Server configuration error' });
     }
@@ -200,7 +200,7 @@ module.exports = async (req, res) => {
       event = stripe.webhooks.constructEvent(
         buf,
         sig,
-        process.env.STRIPE_WEBHOOK_SECRET
+        process.env.VITE_STRIPE_WEBHOOK_SECRET
       );
     } catch (err) {
       console.error('Webhook signature verification failed:', err.message);
