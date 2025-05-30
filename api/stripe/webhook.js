@@ -24,24 +24,60 @@ async function getUserId(customerEmail, customerId, metadata = {}) {
       return metadata.userId;
     }
 
-    // If no metadata userId, try to find by email
-    if (customerEmail) {
-      console.log('Searching by email:', customerEmail);
+    // If no metadata userId, try to find by customer ID first (most reliable)
+    if (customerId) {
+      console.log('Searching by customer ID in profiles:', customerId);
       
-      // Query the profiles table directly since we can't query auth.users
+      // Look for the customer ID in the profiles table
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
-        .select('id, email')
-        .eq('email', customerEmail)
+        .select('id')
+        .eq('stripe_customer_id', customerId)
         .single();
 
-      console.log('Profile lookup by email result:', { profileData, profileError });
+      console.log('Profile lookup by customer ID result:', { profileData, profileError });
 
       if (profileData && !profileError) {
-        console.log(`Found user ${profileData.id} for email ${customerEmail}`);
         return profileData.id;
       } else if (profileError && profileError.code !== 'PGRST116') {
-        console.error('Error looking up profile by email:', profileError);
+        console.error('Error looking up profile by customer ID:', profileError);
+      }
+    }
+
+    // Fall back to email lookup if customer ID fails
+    if (customerEmail) {
+      console.log('Searching by email in auth.users:', customerEmail);
+      
+      // Use the Supabase admin API to find user by email
+      const { data: { users }, error: usersError } = await supabase.auth.admin.listUsers({
+        page: 1,
+        perPage: 1,
+        filter: `email = '${customerEmail.toLowerCase()}'`
+      });
+
+      console.log('Auth users lookup by email result:', { users, usersError });
+
+      if (users && users.length > 0) {
+        const userId = users[0].id;
+        console.log(`Found user ${userId} for email ${customerEmail}`);
+        
+        // Update the profile with the Stripe customer ID if we have it
+        if (customerId) {
+          const { error: updateError } = await supabase
+            .from('profiles')
+            .update({ stripe_customer_id: customerId })
+            .eq('id', userId);
+            
+          if (updateError) {
+            console.error('Error updating profile with Stripe customer ID:', updateError);
+          } else {
+            console.log('Updated profile with Stripe customer ID');
+          }
+        }
+        
+        return userId;
+      } else if (usersError) {
+        console.error('Error looking up user by email:', usersError);
       }
     }
 
