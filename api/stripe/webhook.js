@@ -15,37 +15,56 @@ const supabase = createClient(
 
 // Helper to get user ID from email or customer ID
 async function getUserId(customerEmail, customerId) {
+  console.log('Looking up user:', { customerEmail, customerId });
+  
   try {
     // First try to find by email if available
     if (customerEmail) {
+      console.log('Searching by email:', customerEmail);
       const { data: emailUser, error: emailError } = await supabase
         .from('users')
-        .select('id, stripe_customer_id')
+        .select('id, stripe_customer_id, email')
         .eq('email', customerEmail)
         .single();
+
+      console.log('Email lookup result:', { emailUser, emailError });
 
       if (emailUser && !emailError) {
         // Update customer ID if not set
         if (!emailUser.stripe_customer_id && customerId) {
-          await supabase
+          console.log(`Updating user ${emailUser.id} with Stripe customer ID:`, customerId);
+          const { error: updateError } = await supabase
             .from('users')
             .update({ stripe_customer_id: customerId })
             .eq('id', emailUser.id);
+            
+          if (updateError) {
+            console.error('Error updating user with Stripe ID:', updateError);
+          } else {
+            console.log('Successfully updated user with Stripe ID');
+          }
         }
         return emailUser.id;
+      } else if (emailError && emailError.code !== 'PGRST116') { // PGRST116 = no rows returned
+        console.error('Error looking up user by email:', emailError);
       }
     }
 
     // If no email or user not found by email, try by customer ID
     if (customerId) {
+      console.log('Searching by customer ID:', customerId);
       const { data: customerUser, error: customerError } = await supabase
         .from('users')
-        .select('id')
+        .select('id, email, stripe_customer_id')
         .eq('stripe_customer_id', customerId)
         .single();
 
+      console.log('Customer ID lookup result:', { customerUser, customerError });
+
       if (customerUser && !customerError) {
         return customerUser.id;
+      } else if (customerError && customerError.code !== 'PGRST116') {
+        console.error('Error looking up user by customer ID:', customerError);
       }
     }
 
@@ -60,15 +79,32 @@ async function getUserId(customerEmail, customerId) {
 // Handle successful checkout session
 async function handleCheckoutSessionCompleted(session) {
   console.log('Checkout session completed:', session.id);
+  console.log('Session data:', JSON.stringify({
+    id: session.id,
+    customer: session.customer,
+    customer_email: session.customer_email,
+    customer_details: session.customer_details,
+    metadata: session.metadata,
+    mode: session.mode,
+    subscription: session.subscription,
+    payment_intent: session.payment_intent
+  }, null, 2));
   
   try {
     const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
-    let customerEmail = session.customer_email;
+    let customerEmail = session.customer_email || session.customer_details?.email;
     
     // If no email in session, try to get it from the customer object
     if ((!customerEmail || !customerId) && customerId) {
       try {
+        console.log('Fetching customer details from Stripe for ID:', customerId);
         const customer = await stripe.customers.retrieve(customerId);
+        console.log('Retrieved customer:', JSON.stringify({
+          id: customer.id,
+          email: customer.email,
+          name: customer.name,
+          metadata: customer.metadata
+        }, null, 2));
         customerEmail = customer.email || customerEmail;
       } catch (error) {
         console.error('Error fetching customer:', error);
