@@ -5,6 +5,7 @@
     {
       "src": "/api/stripe/webhook",
       "dest": "/api/stripe/webhook.js",
+      "methods": ["POST", "OPTIONS"],
       "headers": {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST, OPTIONS",
