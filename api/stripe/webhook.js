@@ -21,50 +21,65 @@ async function getUserId(customerEmail, customerId) {
     // First try to find by email if available
     if (customerEmail) {
       console.log('Searching by email:', customerEmail);
-      const { data: emailUser, error: emailError } = await supabase
-        .from('users')
-        .select('id, stripe_customer_id, email')
+      
+      // First get the auth user ID by email
+      const { data: authData, error: authError } = await supabase
+        .from('auth.users')
+        .select('id')
         .eq('email', customerEmail)
         .single();
 
-      console.log('Email lookup result:', { emailUser, emailError });
+      console.log('Auth user lookup result:', { authData, authError });
 
-      if (emailUser && !emailError) {
-        // Update customer ID if not set
-        if (!emailUser.stripe_customer_id && customerId) {
-          console.log(`Updating user ${emailUser.id} with Stripe customer ID:`, customerId);
-          const { error: updateError } = await supabase
-            .from('users')
-            .update({ stripe_customer_id: customerId })
-            .eq('id', emailUser.id);
-            
-          if (updateError) {
-            console.error('Error updating user with Stripe ID:', updateError);
-          } else {
-            console.log('Successfully updated user with Stripe ID');
-          }
+      if (authData && !authError) {
+        // Then check the profiles table
+        const { data: profileData, error: profileError } = await supabase
+          .from('profiles')
+          .select('id, stripe_customer_id')
+          .eq('id', authData.id)
+          .single();
+
+        console.log('Profile lookup result:', { profileData, profileError });
+
+        if (profileData && !profileError) {
+          console.log(`Found user ${profileData.id} for email ${customerEmail}`);
+          return profileData.id;
+        } else if (profileError && profileError.code !== 'PGRST116') {
+          console.error('Error looking up profile:', profileError);
         }
-        return emailUser.id;
-      } else if (emailError && emailError.code !== 'PGRST116') { // PGRST116 = no rows returned
-        console.error('Error looking up user by email:', emailError);
+      } else if (authError && authError.code !== 'PGRST116') {
+        console.error('Error looking up auth user:', authError);
       }
     }
 
     // If no email or user not found by email, try by customer ID
     if (customerId) {
       console.log('Searching by customer ID:', customerId);
-      const { data: customerUser, error: customerError } = await supabase
-        .from('users')
-        .select('id, email, stripe_customer_id')
+      // Look up user by stripe_customer_id in profiles
+      const { data: customerProfileData, error: customerProfileError } = await supabase
+        .from('profiles')
+        .select('id')
         .eq('stripe_customer_id', customerId)
         .single();
 
-      console.log('Customer ID lookup result:', { customerUser, customerError });
+      // If found in profiles, return the user ID
+      if (customerProfileData && !customerProfileError) {
+        return customerProfileData.id;
+      }
 
-      if (customerUser && !customerError) {
-        return customerUser.id;
-      } else if (customerError && customerError.code !== 'PGRST116') {
-        console.error('Error looking up user by customer ID:', customerError);
+      // Fallback to profiles by ID if needed (in case customerId is actually a user ID)
+      const { data: profileData, error: profileError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', customerId)
+        .single();
+
+      console.log('Customer ID lookup result:', { profileData, profileError });
+
+      if (profileData && !profileError) {
+        return profileData.id;
+      } else if (profileError && profileError.code !== 'PGRST116') {
+        console.error('Error looking up profile by ID:', profileError);
       }
     }
 
@@ -159,24 +174,55 @@ async function handleSubscriptionUpdate(subscription) {
       return;
     }
 
-    // Update user's subscription in database
-    const { error } = await supabase
-      .from('users')
-      .update({
-        subscription_status: subscription.status,
-        subscription_id: subscription.id,
-        subscription_plan: subscription.items.data[0]?.price.id,
-        subscription_end_date: subscription.current_period_end ? new Date(subscription.current_period_end * 1000).toISOString() : null,
-        stripe_customer_id: customerId
-      })
-      .eq('id', userId);
+    // Update or create user membership
+    const subscriptionData = {
+      user_id: userId,
+      plan_id: subscription.items.data[0]?.price.id,
+      status: subscription.status,
+      current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
+      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    // Check if membership exists
+    const { data: existingMembership, error: membershipError } = await supabase
+      .from('user_memberships')
+      .select('id')
+      .eq('user_id', userId)
+      .single();
+
+    let error;
+    if (existingMembership) {
+      // Update existing membership
+      const { error: updateError } = await supabase
+        .from('user_memberships')
+        .update(subscriptionData)
+        .eq('id', existingMembership.id);
+      error = updateError;
+    } else {
+      // Create new membership
+      const { error: insertError } = await supabase
+        .from('user_memberships')
+        .insert([{ ...subscriptionData, id: subscription.id }]);
+      error = insertError;
+    }
 
     if (error) {
-      console.error('Error updating subscription:', error);
+      console.error('Error updating membership:', error);
       return;
     }
 
-    console.log('Subscription updated for user:', userId);
+    // Store stripe_customer_id in profiles table
+    const { error: updateError } = await supabase
+      .from('profiles')
+      .update({ stripe_customer_id: customerId })
+      .eq('id', userId);
+
+    if (updateError) {
+      console.error('Error updating profile with Stripe customer ID:', updateError);
+    }
+
+    console.log('Membership updated for user:', userId);
   } catch (error) {
     console.error('Error in handleSubscriptionUpdate:', error);
   }
@@ -238,10 +284,19 @@ async function handlePaymentFailed(invoice) {
   try {
     if (invoice.subscription) {
       const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
-      await handleSubscriptionUpdate({
-        ...subscription,
-        status: 'past_due'
-      });
+      
+      // Update membership status to past_due
+      const { error } = await supabase
+        .from('user_memberships')
+        .update({ 
+          status: 'past_due',
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', subscription.id);
+
+      if (error) {
+        console.error('Error updating membership status to past_due:', error);
+      }
     }
   } catch (error) {
     console.error('Error in handlePaymentFailed:', error);
