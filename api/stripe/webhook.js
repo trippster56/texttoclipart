@@ -7,11 +7,16 @@ const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
   apiVersion: '2023-10-16',
 });
 
-// Initialize Supabase client
-const supabase = createClient(
-  process.env.VITE_SUPABASE_URL || '',
-  process.env.VITE_SUPABASE_ANON_KEY || ''
-);
+// Initialize Supabase clients
+const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
+
+// Regular client for public operations
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+// Admin client for auth operations
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
 // Helper to get user ID from email or customer ID
 async function getUserId(customerEmail, customerId, metadata = {}) {
@@ -49,7 +54,7 @@ async function getUserId(customerEmail, customerId, metadata = {}) {
       console.log('Searching by email in auth.users:', customerEmail);
       
       // Use the Supabase admin API to find user by email
-      const { data: { users }, error: usersError } = await supabase.auth.admin.listUsers({
+      const { data: { users }, error: usersError } = await supabaseAdmin.auth.admin.listUsers({
         page: 1,
         perPage: 1,
         filter: `email = '${customerEmail.toLowerCase()}'`
@@ -63,7 +68,7 @@ async function getUserId(customerEmail, customerId, metadata = {}) {
         
         // Update the profile with the Stripe customer ID if we have it
         if (customerId) {
-          const { error: updateError } = await supabase
+          const { error: updateError } = await supabaseAdmin
             .from('profiles')
             .update({ stripe_customer_id: customerId })
             .eq('id', userId);
