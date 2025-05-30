@@ -1,28 +1,21 @@
-import Stripe from 'stripe';
-import { createClient } from '@supabase/supabase-js';
-import { buffer } from 'micro';
-import { VercelRequest, VercelResponse } from '@vercel/node';
-import { NextApiRequest, NextApiResponse } from 'next';
+// Use CommonJS require for better compatibility
+const Stripe = require('stripe');
+const { createClient } = require('@supabase/supabase-js');
+const { buffer } = require('micro');
 
-// This is needed for Vercel to properly handle the response
-// @ts-ignore
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
-
+// Initialize Stripe with environment variable
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
   apiVersion: '2025-05-28.basil',
 });
 
+// Initialize Supabase client
 const supabase = createClient(
   process.env.VITE_SUPABASE_URL || '',
   process.env.VITE_SUPABASE_ANON_KEY || ''
 );
 
 // Helper to get user ID from email
-async function getUserIdByEmail(email: string): Promise<string | null> {
+async function getUserIdByEmail(email) {
   try {
     const { data, error } = await supabase
       .from('users')
@@ -43,7 +36,7 @@ async function getUserIdByEmail(email: string): Promise<string | null> {
 }
 
 // Handle successful checkout
-async function handleCheckoutSessionCompleted(session: Stripe.Response<Stripe.Checkout.Session>) {
+async function handleCheckoutSessionCompleted(session) {
   console.log('Checkout session completed:', session.id);
   
   if (!session.customer_email) {
@@ -59,7 +52,7 @@ async function handleCheckoutSessionCompleted(session: Stripe.Response<Stripe.Ch
 
   if (session.mode === 'subscription' && session.subscription) {
     // Handle subscription
-    const subscription = await stripe.subscriptions.retrieve(session.subscription as string);
+    const subscription = await stripe.subscriptions.retrieve(session.subscription);
     await handleSubscriptionUpdate(subscription);
   } else if (session.metadata?.packageId) {
     // Handle credit purchase
@@ -85,22 +78,21 @@ async function handleCheckoutSessionCompleted(session: Stripe.Response<Stripe.Ch
 }
 
 // Handle subscription updates
-async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
+async function handleSubscriptionUpdate(subscription) {
   try {
     console.log('Subscription updated:', subscription.id);
     
     // Get customer details from subscription
-    const customer = await stripe.customers.retrieve(subscription.customer as string);
+    const customer = await stripe.customers.retrieve(subscription.customer);
     if (!customer) {
       console.error('No customer found:', subscription.customer);
       return;
     }
 
     // Get user ID from email
-    const customerData = customer as Stripe.Customer;
-    const userId = await getUserIdByEmail(customerData.email!);
+    const userId = await getUserIdByEmail(customer.email);
     if (!userId) {
-      console.error('No user found for email:', customerData.email);
+      console.error('No user found for email:', customer.email);
       return;
     }
 
@@ -128,22 +120,21 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
 }
 
 // Handle failed payments
-async function handlePaymentFailed(invoice: Stripe.Invoice) {
+async function handlePaymentFailed(invoice) {
   try {
     console.log('Payment failed for invoice:', invoice.id);
     
     // Get customer details from invoice
-    const customer = await stripe.customers.retrieve(invoice.customer as string);
+    const customer = await stripe.customers.retrieve(invoice.customer);
     if (!customer) {
-      console.error('No customer found:', invoice.id);
+      console.error('No customer found for invoice:', invoice.id);
       return;
     }
 
     // Get user ID from email
-    const customerData = customer as Stripe.Customer;
-    const userId = await getUserIdByEmail(customerData.email!);
+    const userId = await getUserIdByEmail(customer.email);
     if (!userId) {
-      console.error('No user found for email:', customerData.email);
+      console.error('No user found for email:', customer.email);
       return;
     }
 
@@ -168,9 +159,9 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
   }
 }
 
-// Helper functions
-function getCreditsForPackage(packageId: string): number {
-  const packages: Record<string, number> = {
+// Helper function to get credits for a package
+function getCreditsForPackage(packageId) {
+  const packages = {
     'credit-5': 5,
     'credit-15': 15,
     'credit-30': 30
@@ -179,48 +170,74 @@ function getCreditsForPackage(packageId: string): number {
 }
 
 // Main handler for Vercel Serverless Function
-const handler = async (req: VercelRequest, res: VercelResponse) => {
-  if (req.method === 'POST') {
+module.exports = async (req, res) => {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  try {
     const buf = await buffer(req);
-    const sig = req.headers['stripe-signature'] as string;
+    const sig = req.headers['stripe-signature'];
 
-    let event: Stripe.Event;
+    if (!sig) {
+      console.error('No Stripe signature found in headers');
+      return res.status(400).json({ error: 'No Stripe signature' });
+    }
 
+    if (!process.env.VITE_STRIPE_SECRET_KEY) {
+      console.error('Stripe secret key not configured');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+    
+    if (!process.env.STRIPE_WEBHOOK_SECRET) {
+      console.error('Stripe webhook secret not configured');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    let event;
     try {
       event = stripe.webhooks.constructEvent(
         buf,
         sig,
-        process.env.STRIPE_WEBHOOK_SECRET || ''
+        process.env.STRIPE_WEBHOOK_SECRET
       );
+    } catch (err) {
+      console.error('Webhook signature verification failed:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
 
-      console.log('Processing Stripe event:', event.type);
-      
+    console.log('Processing Stripe event:', event.type);
+    
+    try {
       switch (event.type) {
         case 'checkout.session.completed':
-          await handleCheckoutSessionCompleted(event.data.object as Stripe.Response<Stripe.Checkout.Session>);
+          await handleCheckoutSessionCompleted(event.data.object);
           break;
         case 'customer.subscription.updated':
-          await handleSubscriptionUpdate(event.data.object as Stripe.Response<Stripe.Subscription>);
+          await handleSubscriptionUpdate(event.data.object);
           break;
         case 'invoice.payment_failed':
-          await handlePaymentFailed(event.data.object as Stripe.Response<Stripe.Invoice>);
+          await handlePaymentFailed(event.data.object);
           break;
         default:
           console.log(`Unhandled event type: ${event.type}`);
       }
 
       res.status(200).json({ received: true });
-    } catch (err: any) {
-      console.error(`Webhook Error: ${err.message}`);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+    } catch (error) {
+      console.error('Error processing event:', error);
+      return res.status(500).json({ error: 'Error processing webhook event' });
     }
-  } else {
-    res.setHeader('Allow', 'POST');
-    res.status(405).end('Method Not Allowed');
+  } catch (error) {
+    console.error('Webhook handler error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 };
 
-export default handler;
-
-// TypeScript type for the handler
-export type { VercelRequest, VercelResponse } from '@vercel/node';
+// Required for Vercel Serverless Functions
+module.exports.config = {
+  api: {
+    bodyParser: false,
+  },
+};
