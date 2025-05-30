@@ -7,16 +7,31 @@ const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
   apiVersion: '2023-10-16',
 });
 
-// Initialize Supabase clients
+// Initialize Supabase clients with proper error handling
 const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || '';
 const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
 
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error('Missing required Supabase environment variables');
+  process.exit(1);
+}
+
 // Regular client for public operations
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// Admin client for auth operations
-const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+// Admin client for auth operations (only if service key is available)
+let supabaseAdmin = null;
+if (supabaseServiceKey) {
+  supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  });
+} else {
+  console.warn('VITE_SUPABASE_SERVICE_ROLE_KEY not set. Admin operations will be limited.');
+}
 
 // Helper to get user ID from email or customer ID
 async function getUserId(customerEmail, customerId, metadata = {}) {
@@ -53,37 +68,52 @@ async function getUserId(customerEmail, customerId, metadata = {}) {
     if (customerEmail) {
       console.log('Searching by email in auth.users:', customerEmail);
       
-      // Use the Supabase admin API to find user by email
-      const { data: { users }, error: usersError } = await supabaseAdmin.auth.admin.listUsers({
-        page: 1,
-        perPage: 1,
-        filter: `email = '${customerEmail.toLowerCase()}'`
-      });
+      // First try to find user by ID from metadata if available
+      if (metadata && metadata.userId) {
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('id', metadata.userId)
+          .single();
 
-      console.log('Auth users lookup by email result:', { users, usersError });
-
-      if (users && users.length > 0) {
-        const userId = users[0].id;
-        console.log(`Found user ${userId} for email ${customerEmail}`);
-        
-        // Update the profile with the Stripe customer ID if we have it
-        if (customerId) {
-          const { error: updateError } = await supabaseAdmin
-            .from('profiles')
-            .update({ stripe_customer_id: customerId })
-            .eq('id', userId);
-            
-          if (updateError) {
-            console.error('Error updating profile with Stripe customer ID:', updateError);
-          } else {
-            console.log('Updated profile with Stripe customer ID');
-          }
+        if (profile && !profileError) {
+          console.log(`Found user ${profile.id} using metadata`);
+          return profile.id;
         }
-        
-        return userId;
-      } else if (usersError) {
-        console.error('Error looking up user by email:', usersError);
       }
+
+      // If admin client is available, try to find by email
+      if (supabaseAdmin) {
+        try {
+          const { data: { users }, error: usersError } = await supabaseAdmin.auth.admin.listUsers({
+            page: 1,
+            perPage: 1,
+            filter: `email = '${customerEmail.toLowerCase()}'`
+          });
+
+          if (users && users.length > 0) {
+            console.log(`Found user ${users[0].id} by email using admin client`);
+            return users[0].id;
+          }
+        } catch (error) {
+          console.error('Error looking up user with admin client:', error);
+        }
+      }
+
+      // Fallback: Try to find by email in public schema (if RLS allows)
+      const { data: user, error: userError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('email', customerEmail.toLowerCase())
+        .maybeSingle();
+
+      if (user && !userError) {
+        console.log(`Found user ${user.id} by email in profiles table`);
+        return user.id;
+      }
+
+      console.log('User not found by any method');
+      return null;
     }
 
     // If no email or user not found by email, try by customer ID in profiles
