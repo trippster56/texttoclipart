@@ -1,11 +1,10 @@
-// Use CommonJS require for better compatibility
 const Stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
 const { buffer } = require('micro');
 
 // Initialize Stripe with environment variable
 const stripe = new Stripe(process.env.VITE_STRIPE_SECRET_KEY || '', {
-  apiVersion: '2025-05-28.basil',
+  apiVersion: '2023-10-16',
 });
 
 // Initialize Supabase client
@@ -14,162 +13,206 @@ const supabase = createClient(
   process.env.VITE_SUPABASE_ANON_KEY || ''
 );
 
-// Helper to get user ID from email
-async function getUserIdByEmail(email) {
+// Helper to get user ID from email or customer ID
+async function getUserId(customerEmail, customerId) {
   try {
-    const { data, error } = await supabase
-      .from('users')
-      .select('id')
-      .eq('email', email)
-      .single();
+    // First try to find by email if available
+    if (customerEmail) {
+      const { data: emailUser, error: emailError } = await supabase
+        .from('users')
+        .select('id, stripe_customer_id')
+        .eq('email', customerEmail)
+        .single();
 
-    if (error) {
-      console.error('Error getting user ID:', error);
-      return null;
+      if (emailUser && !emailError) {
+        // Update customer ID if not set
+        if (!emailUser.stripe_customer_id && customerId) {
+          await supabase
+            .from('users')
+            .update({ stripe_customer_id: customerId })
+            .eq('id', emailUser.id);
+        }
+        return emailUser.id;
+      }
     }
 
-    return data?.id || null;
+    // If no email or user not found by email, try by customer ID
+    if (customerId) {
+      const { data: customerUser, error: customerError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('stripe_customer_id', customerId)
+        .single();
+
+      if (customerUser && !customerError) {
+        return customerUser.id;
+      }
+    }
+
+    console.error('User not found for email/customer:', { customerEmail, customerId });
+    return null;
   } catch (error) {
-    console.error('Database error:', error);
+    console.error('Error in getUserId:', error);
     return null;
   }
 }
 
-// Handle successful checkout
+// Handle successful checkout session
 async function handleCheckoutSessionCompleted(session) {
   console.log('Checkout session completed:', session.id);
   
-  if (!session.customer_email) {
-    console.error('No customer email in session');
-    return;
-  }
-
-  const userId = await getUserIdByEmail(session.customer_email);
-  if (!userId) {
-    console.error('User not found for email:', session.customer_email);
-    return;
-  }
-
-  if (session.mode === 'subscription' && session.subscription) {
-    // Handle subscription
-    const subscription = await stripe.subscriptions.retrieve(session.subscription);
-    await handleSubscriptionUpdate(subscription);
-  } else if (session.metadata?.packageId) {
-    // Handle credit purchase
-    const packageId = session.metadata.packageId;
-    const credits = getCreditsForPackage(packageId);
+  try {
+    const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
+    let customerEmail = session.customer_email;
     
-    if (credits > 0) {
-      const { error } = await supabase.rpc('add_credits', {
-        user_id: userId,
-        amount: credits,
-        transaction_type: 'purchase',
-        description: `Purchased ${credits} credits`,
-        reference_id: session.id
-      });
-
-      if (error) {
-        console.error('Error adding credits:', error);
-      } else {
-        console.log(`Added ${credits} credits to user ${session.customer_email}`);
+    // If no email in session, try to get it from the customer object
+    if ((!customerEmail || !customerId) && customerId) {
+      try {
+        const customer = await stripe.customers.retrieve(customerId);
+        customerEmail = customer.email || customerEmail;
+      } catch (error) {
+        console.error('Error fetching customer:', error);
       }
     }
+
+    if (!customerEmail && !customerId) {
+      console.error('No customer email or ID found in session');
+      return;
+    }
+
+    const userId = await getUserId(customerEmail, customerId);
+    if (!userId) {
+      console.error('User not found for session:', session.id);
+      return;
+    }
+
+    // Handle different types of checkouts
+    if (session.mode === 'subscription' && session.subscription) {
+      const subscription = await stripe.subscriptions.retrieve(session.subscription);
+      await handleSubscriptionUpdate(subscription);
+    } else if (session.mode === 'payment' && session.payment_intent) {
+      // Handle one-time payment
+      await handleSuccessfulPayment(session.payment_intent);
+    }
+  } catch (error) {
+    console.error('Error in handleCheckoutSessionCompleted:', error);
   }
 }
 
-// Handle subscription updates
+// Handle subscription events (created/updated)
 async function handleSubscriptionUpdate(subscription) {
+  console.log('Subscription event:', subscription.id);
+  
   try {
-    console.log('Subscription updated:', subscription.id);
-    
-    // Get customer details from subscription
-    const customer = await stripe.customers.retrieve(subscription.customer);
+    const customerId = typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id;
+    if (!customerId) {
+      console.error('No customer ID in subscription:', subscription.id);
+      return;
+    }
+
+    // Get customer details
+    const customer = await stripe.customers.retrieve(customerId);
     if (!customer) {
-      console.error('No customer found:', subscription.customer);
+      console.error('Customer not found for subscription:', subscription.id);
       return;
     }
 
-    // Get user ID from email
-    const userId = await getUserIdByEmail(customer.email);
+    const userId = await getUserId(customer.email, customerId);
     if (!userId) {
-      console.error('No user found for email:', customer.email);
+      console.error('User not found for subscription:', subscription.id);
       return;
     }
 
-    // Update user's subscription status in Supabase
-    const { error: updateError } = await supabase
+    // Update user's subscription in database
+    const { error } = await supabase
       .from('users')
       .update({
         subscription_status: subscription.status,
         subscription_id: subscription.id,
-        subscription_plan: subscription.items.data[0].price.id,
-        subscription_end_date: subscription.current_period_end * 1000
+        subscription_plan: subscription.items.data[0]?.price.id,
+        subscription_end_date: subscription.current_period_end ? new Date(subscription.current_period_end * 1000).toISOString() : null,
+        stripe_customer_id: customerId
       })
       .eq('id', userId);
 
-    if (updateError) {
-      console.error('Error updating subscription:', updateError);
+    if (error) {
+      console.error('Error updating subscription:', error);
       return;
     }
 
-    console.log('Subscription updated successfully for user:', userId);
+    console.log('Subscription updated for user:', userId);
   } catch (error) {
     console.error('Error in handleSubscriptionUpdate:', error);
-    throw error;
   }
 }
 
-// Handle failed payments
-async function handlePaymentFailed(invoice) {
+// Handle successful payment
+async function handleSuccessfulPayment(paymentIntentId) {
+  console.log('Payment succeeded:', paymentIntentId);
+  
   try {
-    console.log('Payment failed for invoice:', invoice.id);
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {
+      expand: ['invoice.subscription']
+    });
+
+    // Handle subscription payment
+    if (paymentIntent.invoice?.subscription) {
+      const subscription = await stripe.subscriptions.retrieve(paymentIntent.invoice.subscription);
+      await handleSubscriptionUpdate(subscription);
+    }
     
-    // Get customer details from invoice
-    const customer = await stripe.customers.retrieve(invoice.customer);
-    if (!customer) {
-      console.error('No customer found for invoice:', invoice.id);
-      return;
+    // Handle one-time payment
+    if (paymentIntent.metadata?.packageId) {
+      const customerId = typeof paymentIntent.customer === 'string' ? paymentIntent.customer : paymentIntent.customer?.id;
+      const customerEmail = paymentIntent.receipt_email;
+      
+      const userId = await getUserId(customerEmail, customerId);
+      if (!userId) {
+        console.error('User not found for payment intent:', paymentIntentId);
+        return;
+      }
+
+      // Add credits or process the one-time purchase
+      // This is where you'd add your credit logic
+      console.log('Process one-time payment for user:', userId);
     }
+  } catch (error) {
+    console.error('Error in handleSuccessfulPayment:', error);
+  }
+}
 
-    // Get user ID from email
-    const userId = await getUserIdByEmail(customer.email);
-    if (!userId) {
-      console.error('No user found for email:', customer.email);
-      return;
+// Handle invoice.paid event
+async function handleInvoicePaid(invoice) {
+  console.log('Invoice paid:', invoice.id);
+  
+  try {
+    if (invoice.subscription) {
+      const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
+      await handleSubscriptionUpdate(subscription);
     }
+  } catch (error) {
+    console.error('Error in handleInvoicePaid:', error);
+  }
+}
 
-    // Update user's subscription status in Supabase
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({
-        subscription_status: 'past_due',
-        subscription_end_date: null
-      })
-      .eq('id', userId);
-
-    if (updateError) {
-      console.error('Error updating subscription:', updateError);
-      return;
+// Handle payment failure
+async function handlePaymentFailed(invoice) {
+  console.log('Payment failed for invoice:', invoice.id);
+  
+  try {
+    if (invoice.subscription) {
+      const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
+      await handleSubscriptionUpdate({
+        ...subscription,
+        status: 'past_due'
+      });
     }
-
-    console.log('Payment failed status updated for user:', userId);
   } catch (error) {
     console.error('Error in handlePaymentFailed:', error);
-    throw error;
   }
 }
 
-// Helper function to get credits for a package
-function getCreditsForPackage(packageId) {
-  const packages = {
-    'credit-5': 5,
-    'credit-15': 15,
-    'credit-30': 30
-  };
-  return packages[packageId] || 0;
-}
-
-// Main handler for Vercel Serverless Function
+// Main webhook handler
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -210,16 +253,29 @@ module.exports = async (req, res) => {
     console.log('Processing Stripe event:', event.type);
     
     try {
+      // Handle the event based on type
       switch (event.type) {
         case 'checkout.session.completed':
           await handleCheckoutSessionCompleted(event.data.object);
           break;
+          
+        case 'customer.subscription.created':
         case 'customer.subscription.updated':
           await handleSubscriptionUpdate(event.data.object);
           break;
+          
+        case 'invoice.paid':
+          await handleInvoicePaid(event.data.object);
+          break;
+          
         case 'invoice.payment_failed':
           await handlePaymentFailed(event.data.object);
           break;
+          
+        case 'payment_intent.succeeded':
+          await handleSuccessfulPayment(event.data.object.id);
+          break;
+          
         default:
           console.log(`Unhandled event type: ${event.type}`);
       }
